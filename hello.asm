@@ -3,7 +3,6 @@ section .data
     hello_len equ $ - hello_msg - 1
     prompt_msg db '> ', 0
     prompt_len equ $ - prompt_msg - 1
-    newline db 0xA, 0
 
 section .bss
     input_buffer resb 256
@@ -12,37 +11,37 @@ section .text
     global _start
 
 _start:
-    mov eax, 4
-    mov ebx, 1
-    mov ecx, hello_msg
-    mov edx, hello_len
-    int 0x80
+    mov rax, 1              ; sys_write
+    mov rdi, 1              ; stdout
+    mov rsi, hello_msg
+    mov rdx, hello_len
+    syscall
 
 input_loop:
-    mov eax, 4
-    mov ebx, 1
-    mov ecx, prompt_msg
-    mov edx, prompt_len
-    int 0x80
+    mov rax, 1              ; sys_write
+    mov rdi, 1              ; stdout
+    mov rsi, prompt_msg
+    mov rdx, prompt_len
+    syscall
     
-    mov eax, 3
-    mov ebx, 0
-    mov ecx, input_buffer
-    mov edx, 256
-    int 0x80
+    mov rax, 0              ; sys_read
+    mov rdi, 0              ; stdin
+    mov rsi, input_buffer
+    mov rdx, 256
+    syscall
     
-    cmp eax, 0
+    cmp rax, 0
     je exit_program
     
-    mov edx, eax
-    mov eax, 4
-    mov ebx, 1
-    mov ecx, input_buffer
-    int 0x80
+    mov rdx, rax            ; bytes read
+    mov rax, 1              ; sys_write
+    mov rdi, 1              ; stdout
+    mov rsi, input_buffer
+    syscall
     
     jmp input_loop
 
 exit_program:
-    mov eax, 1
-    mov ebx, 0
-    int 0x80
+    mov rax, 60             ; sys_exit
+    mov rdi, 0              ; exit status
+    syscall
