@@ -87,15 +87,18 @@ def build_sobel_target():
             'cp $SOURCE $TARGET'
         )
         
+        # Build common utilities object file
+        common_object = sobel_env.Object(os.path.join(build_dir, 'common.o'), 'common.asm', AS='nasm')
+        
         zero_object = sobel_env.Object(os.path.join(build_dir, 'zero_runner.o'), 'zero_runner.asm', AS='nasm')
-        zero_executable = sobel_env.Program(os.path.join(build_dir, 'zero_runner'), zero_object)
+        zero_executable = sobel_env.Program(os.path.join(build_dir, 'zero_runner'), [zero_object, common_object])
         
         # Add dependencies
         # sobel_env.Depends(sobel_executable, [ptx_compiled, runtime_lib])
         # sobel_env.Depends(sobel0_executable, [ptx_compiled, runtime_lib])
         sobel_env.Depends(zero_executable, [zero_ptx_compiled, runtime_lib])
         
-        return [ptx_compiled, zero_executable, zero_ptx_compiled, runtime_lib]
+        return [ptx_compiled, zero_executable, zero_ptx_compiled, runtime_lib, common_object]
     else:
         # Zero filter PTX not found, only build runtime library
         return [ptx_compiled, runtime_lib]

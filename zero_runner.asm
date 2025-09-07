@@ -1,34 +1,12 @@
+%include "common.inc"
+
 section .data
-    ; Constants
-    sz_int32 equ 4
-    sz_int64 equ 8
-    fd_stdin equ 0
-    fd_stdout equ 1
-    fd_stderr equ 2
+    ; CUDA kernel specific constants
     bdim_x equ 16
     bdim_y equ 16
     
-    ; Syscall numbers
-    sys_read equ 0
-    sys_write equ 1
-    sys_open equ 2
-    sys_openat equ 257
-    sys_close equ 3
-    sys_lseek equ 8
-    sys_fstat equ 5
-    sys_mmap equ 9
-    sys_exit equ 60
-    
     usage_msg db 'Usage: zero_runner <width> <height>', 0xA, 0
     usage_len equ $ - usage_msg - 1
-    
-    hex_chars db '0123456789ABCDEF'
-    
-    cuda_error_msg db 'CUDA Error: ', 0
-    cuda_error_len equ $ - cuda_error_msg - 1
-    
-    cuda_fallback_msg db '<cuGetErrorString failed>', 0
-    cuda_fallback_len equ $ - cuda_fallback_msg - 1
     
     memory_error_msg db 'Memory allocation failed', 0xA, 0
     memory_error_len equ $ - memory_error_msg - 1
@@ -54,10 +32,6 @@ section .data
     ptx_mapping_msg db '[D] Mapping PTX file to memory', 0xA, 0
     ptx_mapping_len equ $ - ptx_mapping_msg - 1
     
-    os_error_prefix db 'OS Error: ', 0
-    os_error_prefix_len equ $ - os_error_prefix - 1
-    
-    newline db 0xA, 0
     
     ; Debug messages
     debug_start_msg db '[D] Starting zero_runner...', 0xA, 0
@@ -99,9 +73,6 @@ section .data
     debug_kernel_params_msg db '[D] Kernel params setup', 0xA, 0
     debug_kernel_params_len equ $ - debug_kernel_params_msg - 1
     
-    debug_abort_msg db '[D] Abort!', 0xA, 0
-    debug_abort_len equ $ - debug_abort_msg - 1
-    
     ptx_load_debug_msg db 'cuModuleLoadData_ret', 0
     
     gdim_x_msg db 'gdim.x', 0
@@ -109,13 +80,8 @@ section .data
     bdim_x_msg db 'bdim.x', 0
     bdim_y_msg db 'bdim.y', 0
     
-    hex_buffer db '0x0000000000000000', 0  ; "0x" + 16 hex digits + null terminator
-    debug_buffer_safety db 0  ; safety null terminator for debug_buffer
-
-    debug_prefix db '[D] ', 0
-    debug_prefix_len equ $ - debug_prefix - 1
-    debug_separator db ' = ', 0
-    debug_separator_len equ $ - debug_separator - 1
+    debug_abort_msg db '[D] Abort!', 0xA, 0
+    debug_abort_len equ $ - debug_abort_msg - 1
     
     width_txt db 'width', 0
     height_txt db 'height', 0
@@ -146,8 +112,6 @@ section .bss
     cuda_function resq 1
     
     temp_buffer resb 8  ; Buffer to store current context pointer
-    debug_buffer resb 64  ; buffer for formatted debug output
-    cuda_error_string_ptr resq 1  ; pointer to error string from cuGetErrorString
     
     ; Runtime library function pointers
     runtime_handle resq 1
@@ -157,6 +121,8 @@ section .bss
 
 section .text
     global _start
+    
+    ; CUDA functions
     extern cuInit
     extern cuDeviceGet
     extern cuCtxCreate
@@ -171,6 +137,11 @@ section .text
     extern cuCtxSetCurrent
     extern cuCtxSynchronize
     extern cuGetErrorString
+    extern cuCtxPushCurrent
+    extern cuCtxPopCurrent
+    extern cuCtxGetCurrent
+    
+    ; System functions
     extern dlopen
     extern dlsym
     extern dlclose
@@ -182,27 +153,15 @@ section .text
     extern munmap
     extern strerror
     extern __errno_location
-    extern cuCtxPushCurrent
-    extern cuCtxPopCurrent
-    extern cuCtxGetCurrent
-
-; Macro definitions
-%macro chk_cuda 0
-    test rax, rax
-    jnz abort_cuda
-%endmacro
-
-%macro abort_now 1
-    mov rax, sys_write
-    mov rdi, fd_stderr
-    mov rsi, debug_abort_msg
-    mov rdx, debug_abort_len
-    syscall
     
-    mov rax, sys_exit
-    mov rdi, %1 ; exit code
-    syscall
-%endmacro
+    ; Common utility functions
+    extern parse_int
+    extern convert_rdi_hex
+    extern strlen0
+    extern log_debug
+    extern print_cuda_error
+    extern print_system_error
+    extern abort_cuda
 
 _start:
     mov rbp, rsp
@@ -212,11 +171,7 @@ _start:
     test rax, rax
     jz runtime_load_error
     
-    ; Initialize debug_buffer with "[D] " prefix once
-    mov rsi, debug_prefix
-    mov rdi, debug_buffer
-    mov rcx, debug_prefix_len
-    rep movsb
+    ; Note: debug_buffer initialization is now handled in common.asm
     
     ; Debug: Starting
     mov rax, sys_write
@@ -302,146 +257,7 @@ exit_error:
     mov rdi, 1
     syscall
 
-parse_int:
-    push rbx
-    push rcx
-    push rdx
-    
-    xor rax, rax
-    xor rbx, rbx
-    
-parse_loop:
-    mov bl, [rsi]
-    test bl, bl
-    jz parse_done
-    
-    cmp bl, '0'
-    jb parse_done
-    cmp bl, '9'
-    ja parse_done
-    
-    sub bl, '0'
-    imul rax, 10
-    add rax, rbx
-    inc rsi
-    jmp parse_loop
-    
-parse_done:
-    pop rdx
-    pop rcx
-    pop rbx
-    ret
 
-print_cuda_error:
-    ; Input: rax = CUDA error code
-    ; Prints "CUDA Error: <readable_message>" to stderr
-    push rbp
-    mov rbp, rsp
-    push rdi
-    mov rdi, rax  ; Prepare to log the cuda error code
-    push rsi
-    push rdx
-    push rax
-
-    ; Always log the error code using log_debug
-    mov rcx, sz_int32  ; 4 bytes for 32-bit error code
-    call convert_rdi_hex
-    mov rsi, ret_val_txt
-    call log_debug
-    
-    ; Print "CUDA Error: " prefix
-    mov rax, sys_write
-    mov rdi, fd_stderr
-    mov rsi, cuda_error_msg
-    mov rdx, cuda_error_len
-    syscall
-    
-    ; Get error string from CUDA
-    pop rax  ; restore error code
-    push rax ; save it again
-    mov rdi, rax  ; error code as first parameter
-    mov rsi, cuda_error_string_ptr  ; pointer to pointer for output string
-    call cuGetErrorString
-    ; rax now contains the result code, cuda_error_string_ptr contains the string pointer
-    
-    ; Check if cuGetErrorString succeeded and string pointer is valid
-    test rax, rax
-    jnz .print_fallback_error  ; if cuGetErrorString failed
-    mov rax, [cuda_error_string_ptr]  ; load the actual string pointer
-    test rax, rax
-    jnz .print_cuda_error_string   ; if string pointer is valid, use it
-    
-.print_fallback_error:
-    ; Use fallback message if cuGetErrorString failed or returned NULL
-    mov qword [cuda_error_string_ptr], cuda_fallback_msg
-    
-.print_cuda_error_string:
-    ; Print the error string (either from CUDA or fallback)
-    mov rsi, [cuda_error_string_ptr]  ; error string pointer
-    call strlen0  ; get length in rcx
-    mov rdx, rcx  ; length for write syscall
-    mov rax, sys_write
-    mov rdi, fd_stderr
-    syscall
-    
-    ; Print newline
-    mov rax, sys_write
-    mov rdi, fd_stderr
-    mov rsi, newline
-    mov rdx, 1
-    syscall
-    
-    pop rax  ; restore error code to return it
-    pop rdx
-    pop rsi
-    pop rdi
-    mov rsp, rbp
-    pop rbp
-    ret
-
-print_system_error:
-    ; Prints "OS Error: <system_error_message>" to stderr
-    ; Uses errno to get the actual system error
-    push rbp
-    mov rbp, rsp
-    push rdi
-    push rsi
-    push rdx
-    
-    ; Print "OS Error: " prefix
-    mov rax, sys_write
-    mov rdi, fd_stderr
-    mov rsi, os_error_prefix
-    mov rdx, os_error_prefix_len
-    syscall
-    
-    ; Get errno location and dereference it
-    call __errno_location
-    mov edi, [rax]  ; dereference errno pointer to get errno value
-    call strerror
-    ; rax now contains pointer to error string
-    
-    ; Print the error string
-    mov rsi, rax  ; error string pointer
-    call strlen0  ; get length in rcx
-    mov rdx, rcx  ; length for write syscall
-    mov rax, sys_write
-    mov rdi, fd_stderr
-    syscall
-    
-    ; Print newline
-    mov rax, sys_write
-    mov rdi, fd_stderr
-    mov rsi, newline
-    mov rdx, 1
-    syscall
-    
-    pop rdx
-    pop rsi
-    pop rdi
-    mov rsp, rbp
-    pop rbp
-    ret
 
 init_cuda:
     push rbp
@@ -917,94 +733,6 @@ cleanup_done:
     pop rbp
     ret
 
-convert_rdi_hex:
-    ; rdi = value to convert, rcx = bytes to output
-    push rax
-    push rbx
-    
-    mov rbx, hex_buffer + 1
-    add rbx, rcx
-    add rbx, rcx  ; hex_buffer + 1 + (rcx * 2) = end of hex digits
-    
-    ; Null terminate: "0x" (2) + hex digits (rcx*2) + null (1)
-    mov byte [rbx + 1], 0
-    
-    mov rax, rdi  ; use rax for shifting
-    
-.loop:
-    mov rdi, rax
-    and rdi, 0xF
-    mov dil, [hex_chars + rdi]
-    mov [rbx], dil
-    dec rbx
-    shr rax, 4
-    cmp rbx, hex_buffer + 1  ; stop when we reach "0x" + 1
-    jg .loop
-    
-    pop rbx
-    pop rax
-    ret
-
-strlen0:
-    ; rsi = null-terminated string, returns length in rcx
-    push rdi      ; save caller's rdi since repne scasb modifies it
-    
-    mov rcx, -1
-    xor al, al
-    mov rdi, rsi  ; repne scasb uses rdi
-    repne scasb   ; scan for null, rcx will be -(length+1)
-    neg rcx
-    dec rcx       ; rcx now has string length
-    
-    pop rdi       ; restore caller's rdi
-    ret
-
-log_debug:
-    ; rsi = variable name string (null terminated)
-    push rax
-    push rcx
-    push rdx
-    push rdi
-    push rsi
-    
-    mov rdi, debug_buffer + 4  ; destination, skip "[D] " prefix
-    
-    ; Copy variable name using rep movsb
-    call strlen0   ; returns length in rcx
-    rep movsb
-    
-    ; Add " = " using rep movsb
-    mov rsi, debug_separator
-    mov rcx, debug_separator_len
-    rep movsb
-    
-    ; Copy hex string using rep movsb
-    mov rsi, hex_buffer
-    call strlen0   ; returns length in rcx
-    rep movsb
-    
-    ; Add newline
-    mov byte [rdi], 0xA
-    inc rdi
-    
-    ; Calculate total length and print
-    mov rdx, rdi
-    sub rdx, debug_buffer
-    mov rax, sys_write
-    mov rdi, fd_stderr
-    mov rsi, debug_buffer
-    syscall
-    
-    pop rsi
-    pop rdi
-    pop rdx
-    pop rcx
-    pop rax
-    ret
-
-abort_cuda:
-    call print_cuda_error
-    abort_now 1
 
 ; Load runtime library and resolve function pointers
 ; Returns: rax = 1 on success, 0 on failure
