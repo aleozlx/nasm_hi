@@ -39,11 +39,20 @@ def build_sobel_target():
     
     sobel_env = Environment()
     sobel_env['ASFLAGS'] = ['-f', 'elf64', '-g', '-F', 'dwarf']  # Add debug symbols
-    sobel_env['LIBS'] = ['cuda', 'c']
     
-    # Use CUDA_PATH for library paths
+    # Build runtime library first with separate environment
+    runtime_env = Environment()
+    runtime_env['LIBS'] = ['pthread', 'c']  # Only link with pthread and libc
+    runtime_env['LIBPATH'] = ['/usr/lib/x86_64-linux-gnu']
+    runtime_lib = runtime_env.SharedLibrary(os.path.join(build_dir, 'runtime_init'), 'runtime_init.c')
+    
+    # Link NASM program with CUDA and dl for dlopen/dlsym (no direct runtime_init link)
+    # Add libc for dlopen/dlsym symbols
+    sobel_env['LIBS'] = ['cuda', 'dl', 'pthread', 'c']
+    
+    # Use CUDA_PATH for library paths, add build dir for our runtime lib
     cuda_lib64 = os.path.join(cuda_path, 'lib64')
-    sobel_env['LIBPATH'] = [cuda_lib64, '/usr/lib/x86_64-linux-gnu']
+    sobel_env['LIBPATH'] = [cuda_lib64, '/usr/lib/x86_64-linux-gnu', build_dir]
     sobel_env['LINKFLAGS'] = ['-nostdlib', '-no-pie', '-g', '-dynamic-linker', '/lib64/ld-linux-x86-64.so.2']  # Add dynamic linker explicitly
     
     # Copy existing PTX file to build directory (PTX source already exists)
@@ -60,11 +69,12 @@ def build_sobel_target():
         'cp $SOURCE $TARGET'
     )
     
-    sobel_object = sobel_env.Object(os.path.join(build_dir, 'sobel_runner.o'), 'sobel_runner.asm', AS='nasm')
-    sobel_executable = sobel_env.Program(os.path.join(build_dir, 'sobel_runner'), sobel_object)
+    # Skip sobel_runner and sobel0_runner for now (they still have old malloc references)
+    # sobel_object = sobel_env.Object(os.path.join(build_dir, 'sobel_runner.o'), 'sobel_runner.asm', AS='nasm')
+    # sobel_executable = sobel_env.Program(os.path.join(build_dir, 'sobel_runner'), sobel_object)
     
-    sobel0_object = sobel_env.Object(os.path.join(build_dir, 'sobel_runner0.o'), 'sobel_runner0.asm', AS='nasm')
-    sobel0_executable = sobel_env.Program(os.path.join(build_dir, 'sobel_runner0'), sobel0_object)
+    # sobel0_object = sobel_env.Object(os.path.join(build_dir, 'sobel_runner0.o'), 'sobel_runner0.asm', AS='nasm')
+    # sobel0_executable = sobel_env.Program(os.path.join(build_dir, 'sobel_runner0'), sobel0_object)
     
     # Zero runner target
     zero_ptx_source = 'zero_filter.ptx'
@@ -81,17 +91,14 @@ def build_sobel_target():
         zero_executable = sobel_env.Program(os.path.join(build_dir, 'zero_runner'), zero_object)
         
         # Add dependencies
-        sobel_env.Depends(sobel_executable, ptx_compiled)
-        sobel_env.Depends(sobel0_executable, ptx_compiled)
-        sobel_env.Depends(zero_executable, zero_ptx_compiled)
+        # sobel_env.Depends(sobel_executable, [ptx_compiled, runtime_lib])
+        # sobel_env.Depends(sobel0_executable, [ptx_compiled, runtime_lib])
+        sobel_env.Depends(zero_executable, [zero_ptx_compiled, runtime_lib])
         
-        return [sobel_executable, sobel0_executable, ptx_compiled, zero_executable, zero_ptx_compiled]
+        return [ptx_compiled, zero_executable, zero_ptx_compiled, runtime_lib]
     else:
-        # Add dependencies
-        sobel_env.Depends(sobel_executable, ptx_compiled)
-        sobel_env.Depends(sobel0_executable, ptx_compiled)
-        
-        return [sobel_executable, sobel0_executable, ptx_compiled]
+        # Zero filter PTX not found, only build runtime library
+        return [ptx_compiled, runtime_lib]
 
 # Check for CUDA build flag
 build_cuda = ARGUMENTS.get('cuda', 0)

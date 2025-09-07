@@ -33,8 +33,17 @@ section .data
     memory_error_msg db 'Memory allocation failed', 0xA, 0
     memory_error_len equ $ - memory_error_msg - 1
     
+    runtime_load_error_msg db 'Failed to load runtime library', 0xA, 0
+    runtime_load_error_len equ $ - runtime_load_error_msg - 1
+    
     ptx_file db 'zero_filter.ptx', 0
     kernel_name db 'zero_filter', 0
+    
+    ; Runtime library and function names
+    runtime_lib_name db './build/libruntime_init.so', 0
+    malloc_name db 'runtime_malloc', 0
+    free_name db 'runtime_free', 0
+    memcpy_name db 'runtime_memcpy', 0
     
     ptx_opening_msg db '[D] Opening PTX file: zero_filter.ptx', 0xA, 0
     ptx_opening_len equ $ - ptx_opening_msg - 1
@@ -139,6 +148,12 @@ section .bss
     temp_buffer resb 8  ; Buffer to store current context pointer
     debug_buffer resb 64  ; buffer for formatted debug output
     cuda_error_string_ptr resq 1  ; pointer to error string from cuGetErrorString
+    
+    ; Runtime library function pointers
+    runtime_handle resq 1
+    malloc_ptr resq 1
+    free_ptr resq 1
+    memcpy_ptr resq 1
 
 section .text
     global _start
@@ -156,8 +171,9 @@ section .text
     extern cuCtxSetCurrent
     extern cuCtxSynchronize
     extern cuGetErrorString
-    extern malloc
-    extern free
+    extern dlopen
+    extern dlsym
+    extern dlclose
     extern atoi
     extern open
     extern close
@@ -190,6 +206,11 @@ section .text
 
 _start:
     mov rbp, rsp
+    
+    ; Load runtime library first
+    call load_runtime_library
+    test rax, rax
+    jz runtime_load_error
     
     ; Initialize debug_buffer with "[D] " prefix once
     mov rsi, debug_prefix
@@ -487,14 +508,14 @@ allocate_memory:
 
     ; Allocate host memory for input buffer
     mov rdi, [frame_size]
-    call malloc
+    call [malloc_ptr]
     test rax, rax
     jz malloc_error
     mov [h_input], rax
     
     ; Allocate host memory for output buffer
     mov rdi, [frame_size]
-    call malloc
+    call [malloc_ptr]
     test rax, rax
     jz malloc_error
     mov [h_output], rax
@@ -847,8 +868,8 @@ launch_zero_kernel:
     mov rsi, r8              ; gridDimX  
     mov rdx, r9              ; gridDimY
     mov rcx, 1               ; gridDimZ
-    mov r8d, [bdim_x]        ; blockDimX
-    mov r9d, [bdim_y]        ; blockDimY
+    mov r8d, bdim_x          ; blockDimX
+    mov r9d, bdim_y          ; blockDimY
     push 0                   ; extra (NULL)
     lea rax, [rbp-32]        ; kernelParams array
     push rax                 
@@ -875,13 +896,13 @@ cleanup:
     cmp qword [h_input], 0
     je skip_h_input_free
     mov rdi, [h_input]
-    call free
+    call [free_ptr]
 skip_h_input_free:
     
     cmp qword [h_output], 0
     je skip_h_output_free
     mov rdi, [h_output]
-    call free
+    call [free_ptr]
 skip_h_output_free:
     
     ; Free device memory (will be freed when context is destroyed)
@@ -983,4 +1004,66 @@ log_debug:
 
 abort_cuda:
     call print_cuda_error
+    abort_now 1
+
+; Load runtime library and resolve function pointers
+; Returns: rax = 1 on success, 0 on failure
+load_runtime_library:
+    push rbp
+    mov rbp, rsp
+    
+    ; Load the runtime library
+    mov rdi, runtime_lib_name
+    mov rsi, 1                  ; RTLD_LAZY
+    call dlopen
+    test rax, rax
+    jz .load_failed
+    mov [runtime_handle], rax
+    
+    ; Get malloc function pointer
+    mov rdi, [runtime_handle]
+    mov rsi, malloc_name
+    call dlsym
+    test rax, rax
+    jz .symbol_failed
+    mov [malloc_ptr], rax
+    
+    ; Get free function pointer
+    mov rdi, [runtime_handle]
+    mov rsi, free_name
+    call dlsym
+    test rax, rax
+    jz .symbol_failed
+    mov [free_ptr], rax
+    
+    ; Get memcpy function pointer
+    mov rdi, [runtime_handle]
+    mov rsi, memcpy_name
+    call dlsym
+    test rax, rax
+    jz .symbol_failed
+    mov [memcpy_ptr], rax
+    
+    ; Success
+    mov rax, 1
+    jmp .done
+    
+.symbol_failed:
+    ; Close library on symbol resolution failure
+    mov rdi, [runtime_handle]
+    call dlclose
+    
+.load_failed:
+    mov rax, 0
+    
+.done:
+    pop rbp
+    ret
+
+runtime_load_error:
+    mov rax, sys_write
+    mov rdi, fd_stderr
+    mov rsi, runtime_load_error_msg
+    mov rdx, runtime_load_error_len
+    syscall
     abort_now 1
