@@ -1,0 +1,61 @@
+//
+// Zero Filter PTX Kernel - Writes zeros to output buffer
+//
+
+.version 8.0
+.target sm_50
+.address_size 64
+
+.visible .entry zero_filter(
+	.param .u64 zero_filter_param_0,  // input pointer (unused)
+	.param .u64 zero_filter_param_1,  // output pointer
+	.param .u32 zero_filter_param_2,  // width
+	.param .u32 zero_filter_param_3   // height
+)
+{
+	// Add back register declarations
+	.reg .u32 %tid_x, %tid_y, %ctaid_x, %ctaid_y;
+	.reg .u32 %ntid_x, %ntid_y;
+	.reg .u32 %x, %y, %width, %height;
+	.reg .u32 %idx;
+	.reg .u64 %idx64;
+	.reg .u64 %output_ptr;
+	.reg .u32 %zero;
+	.reg .pred %p1;
+	
+	// Get thread and block indices
+	mov.u32 %tid_x, %tid.x;
+	mov.u32 %tid_y, %tid.y;
+	mov.u32 %ctaid_x, %ctaid.x;
+	mov.u32 %ctaid_y, %ctaid.y;
+	mov.u32 %ntid_x, %ntid.x;
+	mov.u32 %ntid_y, %ntid.y;
+	
+	// Calculate global coordinates
+	mad.lo.u32 %x, %ctaid_x, %ntid_x, %tid_x;
+	mad.lo.u32 %y, %ctaid_y, %ntid_y, %tid_y;
+	
+	// Load parameters
+	ld.param.u64 %output_ptr, [zero_filter_param_1];
+	ld.param.u32 %width, [zero_filter_param_2];
+	ld.param.u32 %height, [zero_filter_param_3];
+	
+	// Check bounds
+	setp.ge.u32 %p1, %x, %width;
+	@%p1 bra EXIT;
+	setp.ge.u32 %p1, %y, %height;
+	@%p1 bra EXIT;
+	
+	// Calculate linear index: y * width + x (for u32 addressing)
+	mad.lo.u32 %idx, %y, %width, %x;
+	
+	// Convert to byte offset and write zero (u32 = 4 bytes per element)
+	shl.b32 %idx, %idx, 2;  // multiply by 4 for u32 alignment
+	cvt.u64.u32 %idx64, %idx;
+	add.u64 %output_ptr, %output_ptr, %idx64;
+	mov.u32 %zero, 0;
+	st.global.u32 [%output_ptr], %zero;
+	
+EXIT:
+	ret;
+}
