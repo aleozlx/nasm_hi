@@ -41,7 +41,7 @@ section .text
     global abort_cuda
     
     ; External functions we need
-    extern cuGetErrorString
+    ; extern cuGetErrorString  ; commented out - using fallback only
     extern strerror
     extern __errno_location
 
@@ -177,6 +177,7 @@ print_cuda_error:
     push rdi
     push rsi
     push rdx
+    push rcx
     push rax
     
     ; Print "CUDA Error: " prefix
@@ -186,23 +187,24 @@ print_cuda_error:
     mov rdx, cuda_error_len
     syscall
     
-    ; Get error string from CUDA
-    pop rax  ; restore error code
-    push rax ; save it again
-    mov rdi, rax  ; error code as first parameter
-    mov rsi, cuda_error_string_ptr  ; pointer to pointer for output string
-    call cuGetErrorString
-    ; rax now contains the result code, cuda_error_string_ptr contains the string pointer
-    
-    ; Check if cuGetErrorString succeeded and string pointer is valid
-    test rax, rax
-    jnz .print_fallback_error  ; if cuGetErrorString failed
-    mov rax, [cuda_error_string_ptr]  ; load the actual string pointer
-    test rax, rax
-    jnz .print_cuda_error_string   ; if string pointer is valid, use it
+    ; COMMENTED OUT - cuGetErrorString requires function pointer from main program
+    ; Get error string from CUDA  
+    ; pop rax  ; restore error code
+    ; push rax ; save it again
+    ; mov rdi, rax  ; error code as first parameter
+    ; mov rsi, cuda_error_string_ptr  ; pointer to pointer for output string
+    ; call cuGetErrorString
+    ; ; rax now contains the result code, cuda_error_string_ptr contains the string pointer
+    ; 
+    ; ; Check if cuGetErrorString succeeded and string pointer is valid
+    ; test rax, rax
+    ; jnz .print_fallback_error  ; if cuGetErrorString failed
+    ; mov rax, [cuda_error_string_ptr]  ; load the actual string pointer
+    ; test rax, rax
+    ; jnz .print_cuda_error_string   ; if string pointer is valid, use it
     
 .print_fallback_error:
-    ; Use fallback message if cuGetErrorString failed or returned NULL
+    ; Use fallback message (always for now)
     mov qword [cuda_error_string_ptr], cuda_fallback_msg
     
 .print_cuda_error_string:
@@ -222,6 +224,7 @@ print_cuda_error:
     syscall
     
     pop rax  ; restore error code to return it
+    pop rcx
     pop rdx
     pop rsi
     pop rdi

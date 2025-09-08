@@ -1,12 +1,32 @@
 %include "common.inc"
 
 section .data
+    ; CUDA library path and function names for dlopen
+    cuda_lib_path db 'libcuda.so.1', 0
+    cuInit_name db 'cuInit', 0
+    cuDeviceGet_name db 'cuDeviceGet', 0
+    cuCtxCreate_name db 'cuCtxCreate', 0
+    cuCtxSetCurrent_name db 'cuCtxSetCurrent', 0
+    cuCtxGetCurrent_name db 'cuCtxGetCurrent', 0
+    cuMemAlloc_name db 'cuMemAlloc', 0
+    cuMemAllocManaged_name db 'cuMemAllocManaged', 0
+    cuMemFree_name db 'cuMemFree', 0
+    cuMemcpyHtoD_name db 'cuMemcpyHtoD', 0
+    cuMemcpyDtoH_name db 'cuMemcpyDtoH', 0
+    cuModuleLoadData_name db 'cuModuleLoadData', 0
+    cuModuleGetFunction_name db 'cuModuleGetFunction', 0
+    cuLaunchKernel_name db 'cuLaunchKernel', 0
+    cuCtxSynchronize_name db 'cuCtxSynchronize', 0
+    cuGetErrorString_name db 'cuGetErrorString', 0
     ; CUDA kernel specific constants
     bdim_x equ 16
     bdim_y equ 16
     
     usage_msg db 'Usage: zero_runner <width> <height>', 0xA, 0
     usage_len equ $ - usage_msg - 1
+    
+    cuda_load_error_msg db 'Error: Failed to load CUDA library', 0xA, 0
+    cuda_load_error_len equ $ - cuda_load_error_msg - 1
     
     memory_error_msg db 'Memory allocation failed', 0xA, 0
     memory_error_len equ $ - memory_error_msg - 1
@@ -17,11 +37,7 @@ section .data
     ptx_file db 'zero_filter.ptx', 0
     kernel_name db 'zero_filter', 0
     
-    ; Runtime library and function names
-    runtime_lib_name db './build/libruntime_init.so', 0
-    malloc_name db 'runtime_malloc', 0
-    free_name db 'runtime_free', 0
-    memcpy_name db 'runtime_memcpy', 0
+    ; Runtime library name (defined in runtime_init.inc)
     
     ptx_opening_msg db '[D] Opening PTX file: zero_filter.ptx', 0xA, 0
     ptx_opening_len equ $ - ptx_opening_msg - 1
@@ -70,6 +86,12 @@ section .data
     debug_write_msg db '[D] Writing result to stdout...', 0xA, 0
     debug_write_len equ $ - debug_write_msg - 1
     
+    zero_check_ok_msg db '[D] ✓ Kernel correctly zeroed all output bytes', 0xA, 0
+    zero_check_ok_len equ $ - zero_check_ok_msg - 1
+    
+    zero_check_fail_msg db '[D] ✗ ERROR: Output contains non-zero bytes!', 0xA, 0
+    zero_check_fail_len equ $ - zero_check_fail_msg - 1
+    
     debug_kernel_params_msg db '[D] Kernel params setup', 0xA, 0
     debug_kernel_params_len equ $ - debug_kernel_params_msg - 1
     
@@ -105,47 +127,60 @@ section .bss
     d_output resq 1
     h_input resq 1
     h_output resq 1
-    
+
+    ; Tensor pointers (replacing individual host/device pointers)
+    input_tensor resq 1
+    output_tensor resq 1
+
     cuda_context resq 2
     cuda_device resd 1
     cuda_module resq 1
     cuda_function resq 1
     
     temp_buffer resb 8  ; Buffer to store current context pointer
+    current_context resq 1  ; Buffer to store current context from cuCtxGetCurrent
     
-    ; Runtime library function pointers
-    runtime_handle resq 1
-    malloc_ptr resq 1
-    free_ptr resq 1
-    memcpy_ptr resq 1
+    ; CUDA library handle and function pointers (dlopen approach)
+    cuda_lib_handle resq 1
+    cuInit_fptr resq 1
+    cuDeviceGet_fptr resq 1
+    cuCtxCreate_fptr resq 1
+    cuCtxSetCurrent_fptr resq 1
+    cuCtxGetCurrent_fptr resq 1
+    cuMemAlloc_fptr resq 1
+    cuMemAllocManaged_fptr resq 1
+    cuMemFree_fptr resq 1
+    cuMemcpyHtoD_fptr resq 1
+    cuMemcpyDtoH_fptr resq 1
+    cuModuleLoadData_fptr resq 1
+    cuModuleGetFunction_fptr resq 1
+    cuLaunchKernel_fptr resq 1
+    cuCtxSynchronize_fptr resq 1
+    cuGetErrorString_fptr resq 1
 
 section .text
-    global _start
+    global main
+    ; global _start  ; commented out - back to main with gcc linking
     
-    ; CUDA functions
-    extern cuInit
-    extern cuDeviceGet
-    extern cuCtxCreate
-    extern cuModuleLoadData
-    extern cuModuleGetFunction
-    extern cuMemAlloc
-    extern cuMemAllocManaged
-    extern cuMemcpyHtoD
-    extern cuMemcpyDtoH
-    extern cuLaunchKernel
-    extern cuCtxDestroy
-    extern cuCtxSetCurrent
-    extern cuCtxSynchronize
-    extern cuGetErrorString
-    extern cuCtxPushCurrent
-    extern cuCtxPopCurrent
-    extern cuCtxGetCurrent
+    ; CUDA Driver API functions - will use dlopen
+    ; extern cuInit
+    ; extern cuDeviceGet
+    ; extern cuCtxCreate
+    ; extern cuCtxSetCurrent
+    ; extern cuModuleLoadData
+    ; extern cuModuleGetFunction
+    ; extern cuMemAlloc
+    ; extern cuMemcpyHtoD
+    ; extern cuMemcpyDtoH
+    ; extern cuLaunchKernel
+    ; extern cuCtxSynchronize
+    ; extern cuCtxGetCurrent
+    ; extern cuGetErrorString
     
-    ; System functions
-    extern dlopen
-    extern dlsym
-    extern dlclose
-    extern atoi
+    ; System functions  
+    extern malloc
+    extern free
+    extern memset
     extern open
     extern close
     extern read
@@ -153,6 +188,9 @@ section .text
     extern munmap
     extern strerror
     extern __errno_location
+    extern dlopen
+    extern dlsym
+    extern dlclose
     
     ; Common utility functions
     extern parse_int
@@ -163,13 +201,16 @@ section .text
     extern print_system_error
     extern abort_cuda
 
-_start:
+main:
+    push rbp
     mov rbp, rsp
     
-    ; Load runtime library first
-    call load_runtime_library
+    ; C runtime entry point - argc in rdi, argv in rsi
+    
+    ; Load CUDA library with dlopen
+    call load_cuda_library
     test rax, rax
-    jz runtime_load_error
+    jz cuda_load_error
     
     ; Note: debug_buffer initialization is now handled in common.asm
     
@@ -180,16 +221,43 @@ _start:
     mov rdx, debug_start_len
     syscall
 
-    cmp qword [rbp], 3
-    jne usage_error
+    ; TEMPORARY: Hard-code arguments to focus on CUDA kernel
+    ; TODO: Fix argument parsing later
+    mov dword [width], 3
+    mov dword [height], 3
     
-    mov rsi, [rbp + 16]
-    call parse_int
-    mov [width], eax
+    ; Test C runtime initialization with a small malloc
+    mov rdi, 16         ; allocate 16 bytes
+    call malloc
+    test rax, rax
+    jz malloc_test_failed
     
-    mov rsi, [rbp + 24]
-    call parse_int  
-    mov [height], eax
+    ; Debug: print malloc test result
+    push rax
+    mov rdi, rax
+    mov rcx, sz_int64
+    call convert_rdi_hex
+    mov rsi, debug_device_msg    ; reuse existing string
+    call log_debug
+    pop rax
+    
+    ; Free the test allocation
+    mov rdi, rax
+    call free
+    jmp malloc_test_ok
+    
+malloc_test_failed:
+    ; C runtime malloc failed!
+    mov rax, sys_write
+    mov rdi, fd_stderr
+    mov rsi, memory_error_msg
+    mov rdx, memory_error_len
+    syscall
+    mov rax, 1
+    pop rbp
+    ret
+    
+malloc_test_ok:
     
     mov eax, [width]
     imul eax, [height]
@@ -220,8 +288,22 @@ _start:
     mov rdx, debug_args_len
     syscall
     
+    ; Direct CUDA initialization
     call init_cuda
-    call allocate_memory
+    
+    ; Debug: Check current context after cuda_init
+    mov rdi, current_context  ; pointer to store current context
+    call [cuCtxGetCurrent_fptr]
+    chk_cuda
+    
+    ; Debug: Print current context
+    mov rdi, [current_context]
+    mov rcx, sz_int64
+    call convert_rdi_hex
+    mov rsi, debug_current_ctx_msg
+    call log_debug
+    
+    call allocate_memory_direct
     call load_ptx_module
     ; Debug: Processing
     mov rax, sys_write
@@ -236,27 +318,40 @@ _start:
     
     call cleanup
     
-    mov rax, sys_exit
-    mov rdi, 0
-    syscall
+    ; Return 0 from main()
+    mov rax, 0
+    pop rbp
+    ret
 
 usage_error:
+    ; This shouldn't be reached with hard-coded args
     mov rax, sys_write
     mov rdi, fd_stderr
     mov rsi, usage_msg
     mov rdx, usage_len
     syscall
     
-    mov rax, sys_exit
-    mov rdi, 1
+    ; Return 1 from main()
+    mov rax, 1
+    pop rbp
+    ret
+
+function_null_error:
+    mov rax, sys_write
+    mov rdi, fd_stderr
+    mov rsi, memory_error_msg  ; reuse error message
+    mov rdx, memory_error_len
     syscall
+    mov rax, 1
+    pop rbp
+    ret
 
 exit_error:
     call cleanup
-    mov rax, sys_exit
-    mov rdi, 1
-    syscall
-
+    ; Return 1 from main()
+    mov rax, 1
+    pop rbp
+    ret
 
 
 init_cuda:
@@ -272,13 +367,13 @@ init_cuda:
     
     ; rax = cuInit(0)
     mov rdi, 0
-    call cuInit
+    call [cuInit_fptr]
     chk_cuda
     
     ; rax = cuDeviceGet(&cuda_device, 0)
     mov rdi, cuda_device
     mov rsi, 0
-    call cuDeviceGet
+    call [cuDeviceGet_fptr]
     chk_cuda
     
     ; Debug: Print device ID
@@ -292,7 +387,7 @@ init_cuda:
     mov rsi, 0
     xor rdx, rdx
     mov edx, [cuda_device]
-    call cuCtxCreate
+    call [cuCtxCreate_fptr]
     chk_cuda
     
     ; Debug: Print context pointer
@@ -304,14 +399,14 @@ init_cuda:
     
     ; Set the context as current for this thread
     mov rdi, [cuda_context]
-    call cuCtxSetCurrent
+    call [cuCtxSetCurrent_fptr]
     chk_cuda
     
     mov rsp, rbp
     pop rbp
     ret
 
-allocate_memory:
+allocate_memory_direct:
     push rbp
     mov rbp, rsp
     
@@ -324,30 +419,35 @@ allocate_memory:
 
     ; Allocate host memory for input buffer
     mov rdi, [frame_size]
-    call [malloc_ptr]
+    call malloc
     test rax, rax
     jz malloc_error
     mov [h_input], rax
     
     ; Allocate host memory for output buffer
     mov rdi, [frame_size]
-    call [malloc_ptr]
+    call malloc
     test rax, rax
     jz malloc_error
     mov [h_output], rax
 
+    ; Initialize output buffer to all 1s (0xFF) to verify kernel zeroing
+    mov rdi, [h_output]       ; destination
+    mov rsi, 0xFF             ; fill with 0xFF (all 1s)
+    mov rdx, [frame_size]     ; size
+    call memset
+
     ; Allocate device memory for input buffer
     mov rdi, d_input          ; pointer to the pointer
     mov rsi, [frame_size]     ; size in bytes
-    call cuMemAlloc
+    call [cuMemAlloc_fptr]
     chk_cuda
     
     ; Allocate device memory for output buffer
     mov rdi, d_output         ; pointer to the pointer
     mov rsi, [frame_size]     ; size in bytes
-    call cuMemAlloc
+    call [cuMemAlloc_fptr]
     chk_cuda
-
 
     ; Debug: Print allocated host and device pointers
 
@@ -383,6 +483,8 @@ allocate_memory:
     mov rsp, rbp
     pop rbp
     ret
+
+; COMMENTED OUT - old allocate_memory function (using allocate_memory_direct instead)
 
 malloc_error:
     ; Print memory allocation error message
@@ -489,13 +591,13 @@ load_ptx_module:
     
     mov rdi, cuda_module
     mov rsi, rax
-    call cuModuleLoadData
+    call [cuModuleLoadData_fptr]
     chk_cuda
     
     mov rdi, cuda_function
     mov rsi, [cuda_module]
     mov rdx, kernel_name
-    call cuModuleGetFunction
+    call [cuModuleGetFunction_fptr]
     chk_cuda
     
     xor eax, eax
@@ -554,11 +656,30 @@ process_single_frame:
     mov rdx, debug_htod_len
     syscall
     
-    ; Copy data from host to device
+    ; Debug: Check current context before cuMemcpyHtoD
+    mov rdi, current_context  ; pointer to store current context
+    call [cuCtxGetCurrent_fptr]
+    chk_cuda
+    
+    ; Debug: Print current context before memory copy
+    mov rdi, [current_context]
+    mov rcx, sz_int64
+    call convert_rdi_hex
+    mov rsi, debug_current_ctx_msg
+    call log_debug
+    
+    ; Copy input data from host to device
     mov rdi, [d_input]        ; destination (device)
     mov rsi, [h_input]        ; source (host)
     mov rdx, [frame_size]     ; size
-    call cuMemcpyHtoD
+    call [cuMemcpyHtoD_fptr]
+    chk_cuda
+    
+    ; Copy output data (initialized to 0xFF) from host to device
+    mov rdi, [d_output]       ; destination (device)
+    mov rsi, [h_output]       ; source (host, filled with 0xFF)
+    mov rdx, [frame_size]     ; size
+    call [cuMemcpyHtoD_fptr]
     chk_cuda
     
     ; Debug: Kernel launch
@@ -582,9 +703,40 @@ process_single_frame:
     mov rdi, [h_output]       ; destination (host)
     mov rsi, [d_output]       ; source (device)
     mov rdx, [frame_size]     ; size
-    call cuMemcpyDtoH
+    call [cuMemcpyDtoH_fptr]
     chk_cuda
     
+    ; Verify that the kernel correctly zeroed the output
+    mov rsi, [h_output]       ; buffer to check
+    mov rcx, [frame_size]     ; size to check
+    xor rax, rax              ; looking for zero bytes
+check_zero_loop:
+    test rcx, rcx
+    jz all_zeros_found
+    cmp byte [rsi], 0         ; check if byte is zero
+    jne non_zero_found
+    inc rsi
+    dec rcx
+    jmp check_zero_loop
+    
+non_zero_found:
+    ; Print error message if non-zero byte found
+    mov rax, sys_write
+    mov rdi, fd_stderr
+    mov rsi, zero_check_fail_msg
+    mov rdx, zero_check_fail_len
+    syscall
+    jmp zero_check_done
+    
+all_zeros_found:
+    ; Print success message if all bytes are zero
+    mov rax, sys_write
+    mov rdi, fd_stderr
+    mov rsi, zero_check_ok_msg
+    mov rdx, zero_check_ok_len
+    syscall
+    
+zero_check_done:
     ; Debug: Writing result
     mov rax, sys_write
     mov rdi, fd_stderr
@@ -626,17 +778,17 @@ launch_zero_kernel:
     mov eax, [height]  
     mov [rbp-24], eax
     
-    ; Set up kernel parameter array (input, output, width, height)
-    lea rax, [rbp-8]     ; d_input pointer
-    mov [rbp-32], rax
-    lea rax, [rbp-16]    ; d_output pointer  
-    mov [rbp-40], rax
-    lea rax, [rbp-20]    ; width pointer
-    mov [rbp-48], rax
-    lea rax, [rbp-24]    ; height pointer
-    mov [rbp-56], rax
-    ; Null terminate the parameter array
-    mov qword [rbp-64], 0
+    ; Set up kernel parameter array: pointers to actual values
+    ; The kernel expects: [&d_input_value, &d_output_value, &width_value, &height_value]
+    ; But we need to point to the VALUES, not the storage locations
+    lea rax, [rbp-8]     ; &d_input (points to where d_input value is stored)
+    mov [rbp-56], rax    ; params[0] = &d_input
+    lea rax, [rbp-16]    ; &d_output (points to where d_output value is stored)
+    mov [rbp-48], rax    ; params[1] = &d_output  
+    lea rax, [rbp-20]    ; &width (points to where width value is stored)
+    mov [rbp-40], rax    ; params[2] = &width
+    lea rax, [rbp-24]    ; &height (points to where height value is stored)
+    mov [rbp-32], rax    ; params[3] = &height
     
     mov eax, [width]
     add eax, 15
@@ -679,6 +831,40 @@ launch_zero_kernel:
     pop r9
     pop r8
     
+    ; Debug: Print parameter values before launch
+    push r8
+    push r9
+    mov rdi, [d_input]
+    mov rcx, sz_int64
+    call convert_rdi_hex
+    mov rsi, debug_d_input_msg
+    call log_debug
+    
+    mov rdi, [d_output]
+    mov rcx, sz_int64
+    call convert_rdi_hex
+    mov rsi, debug_d_output_msg
+    call log_debug
+    
+    mov rdi, [width]
+    mov rcx, sz_int32
+    call convert_rdi_hex
+    mov rsi, width_txt
+    call log_debug
+    
+    mov rdi, [height]
+    mov rcx, sz_int32
+    call convert_rdi_hex
+    mov rsi, height_txt
+    call log_debug
+    pop r9
+    pop r8
+    
+    ; Debug: Check if cuda_function is valid
+    mov rax, [cuda_function]
+    test rax, rax
+    jz function_null_error
+    
     ; cuLaunchKernel parameters: f, gridX, gridY, gridZ, blockX, blockY, blockZ, sharedMem, stream, params, extra
     mov rdi, [cuda_function]  ; f
     mov rsi, r8              ; gridDimX  
@@ -686,18 +872,24 @@ launch_zero_kernel:
     mov rcx, 1               ; gridDimZ
     mov r8d, bdim_x          ; blockDimX
     mov r9d, bdim_y          ; blockDimY
+    
+    ; Ensure 16-byte stack alignment before call
+    ; We're pushing 5 qwords (40 bytes), so add 8 bytes padding
+    push 0                   ; padding for alignment, otherwise causing SSE segfault, eg. movaps
     push 0                   ; extra (NULL)
-    lea rax, [rbp-32]        ; kernelParams array
+    lea rax, [rbp-56]        ; kernelParams array (start from the last parameter)
     push rax                 
     push 0                   ; hStream (NULL)
     push 0                   ; sharedMemBytes
     push 1                   ; blockDimZ
-    call cuLaunchKernel
-    add rsp, 40
+    
+    ; Call cuLaunchKernel (parameters already set up)
+    call [cuLaunchKernel_fptr]
+    add rsp, 48              ; 6 qwords = 48 bytes
     chk_cuda
     
     ; Synchronize to wait for kernel completion and check for kernel errors
-    call cuCtxSynchronize
+    call [cuCtxSynchronize_fptr]
     chk_cuda
     
     mov rsp, rbp
@@ -708,69 +900,190 @@ cleanup:
     push rbp
     mov rbp, rsp
     
+    ; COMMENTED OUT - tensor operations (using direct memory management)
+    ; Free input tensor (handles both host and device memory)
+    ; cmp qword [input_tensor], 0
+    ; je skip_input_tensor_free
+    ; mov rdi, [input_tensor]    ; tensor pointer
+    ; mov rsi, 0                 ; TENSOR_MODE_HOST_DEVICE
+    ; call [tensor_free_fptr]
+    ; skip_input_tensor_free:
+
+    ; Free output tensor (handles both host and device memory)
+    ; cmp qword [output_tensor], 0
+    ; je skip_output_tensor_free
+    ; mov rdi, [output_tensor]   ; tensor pointer
+    ; mov rsi, 0                 ; TENSOR_MODE_HOST_DEVICE
+    ; call [tensor_free_fptr]
+    ; skip_output_tensor_free:
+
     ; Free host memory
     cmp qword [h_input], 0
     je skip_h_input_free
     mov rdi, [h_input]
-    call [free_ptr]
+    call free
 skip_h_input_free:
     
     cmp qword [h_output], 0
     je skip_h_output_free
     mov rdi, [h_output]
-    call [free_ptr]
+    call free
 skip_h_output_free:
+
+    ; Free device memory
+    cmp qword [d_input], 0
+    je skip_d_input_free
+    mov rdi, [d_input]
+    call [cuMemFree_fptr]
+    ; Note: chk_cuda omitted in cleanup to avoid infinite recursion
+skip_d_input_free:
     
-    ; Free device memory (will be freed when context is destroyed)
-    ; CUDA context cleanup
-    cmp qword [cuda_context], 0
-    je cleanup_done
-    mov rdi, [cuda_context]
-    call cuCtxDestroy
-    
+    cmp qword [d_output], 0
+    je skip_d_output_free
+    mov rdi, [d_output]
+    call [cuMemFree_fptr]
+    ; Note: chk_cuda omitted in cleanup to avoid infinite recursion
+skip_d_output_free:
+
 cleanup_done:
     mov rsp, rbp
     pop rbp
     ret
 
 
-; Load runtime library and resolve function pointers
+; Load CUDA library and resolve function pointers
 ; Returns: rax = 1 on success, 0 on failure
-load_runtime_library:
+load_cuda_library:
     push rbp
     mov rbp, rsp
     
-    ; Load the runtime library
-    mov rdi, runtime_lib_name
+    ; Load the CUDA library
+    mov rdi, cuda_lib_path
     mov rsi, 1                  ; RTLD_LAZY
     call dlopen
     test rax, rax
     jz .load_failed
-    mov [runtime_handle], rax
+    mov [cuda_lib_handle], rax
     
-    ; Get malloc function pointer
-    mov rdi, [runtime_handle]
-    mov rsi, malloc_name
+    ; Get cuInit function pointer
+    mov rdi, [cuda_lib_handle]
+    mov rsi, cuInit_name
     call dlsym
     test rax, rax
     jz .symbol_failed
-    mov [malloc_ptr], rax
-    
-    ; Get free function pointer
-    mov rdi, [runtime_handle]
-    mov rsi, free_name
+    mov [cuInit_fptr], rax
+
+    ; Get cuDeviceGet function pointer
+    mov rdi, [cuda_lib_handle]
+    mov rsi, cuDeviceGet_name
     call dlsym
     test rax, rax
     jz .symbol_failed
-    mov [free_ptr], rax
-    
-    ; Get memcpy function pointer
-    mov rdi, [runtime_handle]
-    mov rsi, memcpy_name
+    mov [cuDeviceGet_fptr], rax
+
+    ; Get cuCtxCreate function pointer
+    mov rdi, [cuda_lib_handle]
+    mov rsi, cuCtxCreate_name
     call dlsym
     test rax, rax
     jz .symbol_failed
-    mov [memcpy_ptr], rax
+    mov [cuCtxCreate_fptr], rax
+
+    ; Get cuCtxSetCurrent function pointer
+    mov rdi, [cuda_lib_handle]
+    mov rsi, cuCtxSetCurrent_name
+    call dlsym
+    test rax, rax
+    jz .symbol_failed
+    mov [cuCtxSetCurrent_fptr], rax
+    
+    ; Get cuCtxGetCurrent function pointer
+    mov rdi, [cuda_lib_handle]
+    mov rsi, cuCtxGetCurrent_name
+    call dlsym
+    test rax, rax
+    jz .symbol_failed
+    mov [cuCtxGetCurrent_fptr], rax
+
+    ; Get cuMemAlloc function pointer
+    mov rdi, [cuda_lib_handle]
+    mov rsi, cuMemAlloc_name
+    call dlsym
+    test rax, rax
+    jz .symbol_failed
+    mov [cuMemAlloc_fptr], rax
+
+    ; Get cuMemAllocManaged function pointer
+    mov rdi, [cuda_lib_handle]
+    mov rsi, cuMemAllocManaged_name
+    call dlsym
+    test rax, rax
+    jz .symbol_failed
+    mov [cuMemAllocManaged_fptr], rax
+
+    ; Get cuMemFree function pointer
+    mov rdi, [cuda_lib_handle]
+    mov rsi, cuMemFree_name
+    call dlsym
+    test rax, rax
+    jz .symbol_failed
+    mov [cuMemFree_fptr], rax
+
+    ; Get cuMemcpyHtoD function pointer
+    mov rdi, [cuda_lib_handle]
+    mov rsi, cuMemcpyHtoD_name
+    call dlsym
+    test rax, rax
+    jz .symbol_failed
+    mov [cuMemcpyHtoD_fptr], rax
+
+    ; Get cuMemcpyDtoH function pointer
+    mov rdi, [cuda_lib_handle]
+    mov rsi, cuMemcpyDtoH_name
+    call dlsym
+    test rax, rax
+    jz .symbol_failed
+    mov [cuMemcpyDtoH_fptr], rax
+
+    ; Get cuModuleLoadData function pointer
+    mov rdi, [cuda_lib_handle]
+    mov rsi, cuModuleLoadData_name
+    call dlsym
+    test rax, rax
+    jz .symbol_failed
+    mov [cuModuleLoadData_fptr], rax
+
+    ; Get cuModuleGetFunction function pointer
+    mov rdi, [cuda_lib_handle]
+    mov rsi, cuModuleGetFunction_name
+    call dlsym
+    test rax, rax
+    jz .symbol_failed
+    mov [cuModuleGetFunction_fptr], rax
+
+    ; Get cuLaunchKernel function pointer
+    mov rdi, [cuda_lib_handle]
+    mov rsi, cuLaunchKernel_name
+    call dlsym
+    test rax, rax
+    jz .symbol_failed
+    mov [cuLaunchKernel_fptr], rax
+
+    ; Get cuCtxSynchronize function pointer
+    mov rdi, [cuda_lib_handle]
+    mov rsi, cuCtxSynchronize_name
+    call dlsym
+    test rax, rax
+    jz .symbol_failed
+    mov [cuCtxSynchronize_fptr], rax
+
+    ; Get cuGetErrorString function pointer
+    mov rdi, [cuda_lib_handle]
+    mov rsi, cuGetErrorString_name
+    call dlsym
+    test rax, rax
+    jz .symbol_failed
+    mov [cuGetErrorString_fptr], rax
     
     ; Success
     mov rax, 1
@@ -778,7 +1091,7 @@ load_runtime_library:
     
 .symbol_failed:
     ; Close library on symbol resolution failure
-    mov rdi, [runtime_handle]
+    mov rdi, [cuda_lib_handle]
     call dlclose
     
 .load_failed:
@@ -788,10 +1101,10 @@ load_runtime_library:
     pop rbp
     ret
 
-runtime_load_error:
+cuda_load_error:
     mov rax, sys_write
     mov rdi, fd_stderr
-    mov rsi, runtime_load_error_msg
-    mov rdx, runtime_load_error_len
+    mov rsi, cuda_load_error_msg
+    mov rdx, cuda_load_error_len
     syscall
     abort_now 1

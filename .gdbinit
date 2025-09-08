@@ -27,14 +27,13 @@ break launch_zero_kernel
 
 # CUDA-specific breakpoints - more targeted
 # break cuInit
-# Break right before cuLaunchKernel call in launch_zero_kernel
-break *launch_zero_kernel+200
 
 # Display useful info at each stop
 define hook-stop
-    echo \n=== BREAKPOINT HIT ===\n
+    echo \n=== HOOK_STOP ===\n
     info registers rdi rsi rcx rdx rax rbx
-    x/5i $pc
+    x/15i $pc
+    bt
 end
 
 # Custom commands
@@ -71,8 +70,11 @@ end
 
 # Start at the beginning
 echo \n=== GDB Ready for zero_runner debugging ===\n
-echo Auto-running with: run 64 64 < test_input.raw\n
-echo Custom commands: show-cuda-params, show-memory, show-hex-buffer\n
+# echo Auto-running with: run 64 64 < test_input.raw\n
+# echo Custom commands: show-cuda-params, show-memory, show-hex-buffer\n
+
+directory /home/aleyang/repos/nasm_hi
 
 # Automatically start debugging
-run 64 64 < test_input.raw
+# file ./build/zero_runner
+# run 64 64 < test_input.raw

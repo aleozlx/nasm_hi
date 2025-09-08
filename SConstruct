@@ -37,23 +37,41 @@ def build_sobel_target():
     
     print(f"Using CUDA toolkit at: {cuda_path}")
     
+    # Use CUDA_PATH for library paths
+    cuda_lib64 = os.path.join(cuda_path, 'targets/x86_64-linux/lib')
+    cuda_stubs = os.path.join(cuda_path, 'targets/x86_64-linux/lib/stubs')
+
     sobel_env = Environment()
     sobel_env['ASFLAGS'] = ['-f', 'elf64', '-g', '-F', 'dwarf']  # Add debug symbols
-    
+
     # Build runtime library first with separate environment
-    runtime_env = Environment()
-    runtime_env['LIBS'] = ['pthread', 'c']  # Only link with pthread and libc
-    runtime_env['LIBPATH'] = ['/usr/lib/x86_64-linux-gnu']
-    runtime_lib = runtime_env.SharedLibrary(os.path.join(build_dir, 'runtime_init'), 'runtime_init.c')
+    # COMMENTED OUT - testing without runtime library
+    # runtime_env = Environment()
+    # runtime_env['CFLAGS'] = ['-g', '-O0', '-masm=intel', '-fPIC', '-shared']  # Add debug symbols, disable optimization, use Intel assembly syntax, and ensure PIC for shared library
+    # runtime_env['CPPPATH'] = [os.path.join(cuda_path, 'include')]  # CUDA headers for C compilation
+    # runtime_env['LIBS'] = ['cuda', 'dl', 'pthread', 'c']  # CUDA, dl, pthread, and libc (dependency order)
+    # runtime_env['LIBPATH'] = [cuda_lib64, '/usr/lib/x86_64-linux-gnu']
+    # runtime_env['LINKFLAGS'] = ['-shared', '-Wl,--export-dynamic']  # Ensure all symbols are exported for dlopen/dlsym
+
+    # # Build runtime_init.o
+    # runtime_obj = runtime_env.Object(os.path.join(build_dir, 'runtime_init.o'), 'runtime_init.c')
+
+    # # Build runtime library
+    # runtime_lib = runtime_env.SharedLibrary(os.path.join(build_dir, 'runtime_init'), 'runtime_init.c')
+
+    # Use gcc for linking - simplifies C runtime initialization
+    sobel_env['LINK'] = 'gcc'
+    sobel_env['LINKCOM'] = '$LINK $LINKFLAGS -o $TARGET $SOURCES $_LIBDIRFLAGS $_LIBFLAGS'
+    sobel_env['LIBPATH'] = ['/usr/lib/x86_64-linux-gnu']
     
-    # Link NASM program with CUDA and dl for dlopen/dlsym (no direct runtime_init link)
-    # Add libc for dlopen/dlsym symbols
-    sobel_env['LIBS'] = ['cuda', 'dl', 'pthread', 'c']
-    
-    # Use CUDA_PATH for library paths, add build dir for our runtime lib
-    cuda_lib64 = os.path.join(cuda_path, 'lib64')
-    sobel_env['LIBPATH'] = [cuda_lib64, '/usr/lib/x86_64-linux-gnu', build_dir]
-    sobel_env['LINKFLAGS'] = ['-nostdlib', '-no-pie', '-g', '-dynamic-linker', '/lib64/ld-linux-x86-64.so.2']  # Add dynamic linker explicitly
+    # gcc flags - proper C runtime + dlopen for CUDA
+    sobel_env['LINKFLAGS'] = [
+        '-g',
+        '-no-pie',
+        '-ldl',        # Dynamic loading
+        '-lpthread',   # Threading
+        '-lc'          # C library
+    ]
     
     # Copy existing PTX file to build directory (PTX source already exists)
     ptx_source = 'sobel_filter.ptx'
@@ -89,19 +107,21 @@ def build_sobel_target():
         
         # Build common utilities object file
         common_object = sobel_env.Object(os.path.join(build_dir, 'common.o'), 'common.asm', AS='nasm')
-        
+
+        # Ensure runtime_init.inc is available for zero_runner.asm
         zero_object = sobel_env.Object(os.path.join(build_dir, 'zero_runner.o'), 'zero_runner.asm', AS='nasm')
         zero_executable = sobel_env.Program(os.path.join(build_dir, 'zero_runner'), [zero_object, common_object])
-        
+
         # Add dependencies
         # sobel_env.Depends(sobel_executable, [ptx_compiled, runtime_lib])
         # sobel_env.Depends(sobel0_executable, [ptx_compiled, runtime_lib])
-        sobel_env.Depends(zero_executable, [zero_ptx_compiled, runtime_lib])
+        sobel_env.Depends(zero_executable, [zero_ptx_compiled])
+        # sobel_env.Depends(zero_object, 'runtime_init.inc')  # Ensure include file is available (commented out)
         
-        return [ptx_compiled, zero_executable, zero_ptx_compiled, runtime_lib, common_object]
+        return [ptx_compiled, zero_executable, zero_ptx_compiled, common_object]
     else:
-        # Zero filter PTX not found, only build runtime library
-        return [ptx_compiled, runtime_lib]
+        # Zero filter PTX not found, only build basic targets
+        return [ptx_compiled]
 
 # Check for CUDA build flag
 build_cuda = ARGUMENTS.get('cuda', 0)
