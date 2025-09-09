@@ -7,55 +7,55 @@
 .address_size 64
 
 .visible .entry zero_filter(
-	.param .u64 zero_filter_param_0,  // input pointer (unused)
-	.param .u64 zero_filter_param_1,  // output pointer
-	.param .u32 zero_filter_param_2,  // width
-	.param .u32 zero_filter_param_3   // height
+	.param .u64 zero_filter_param_0,  // input pointer (unused) -> uint32_t* input
+	.param .u64 zero_filter_param_1,  // output pointer -> uint32_t* output  
+	.param .u32 zero_filter_param_2,  // width -> uint32_t width
+	.param .u32 zero_filter_param_3   // height -> uint32_t height
 )
 {
-	// Add back register declarations
-	.reg .u32 %tid_x, %tid_y, %ctaid_x, %ctaid_y;
-	.reg .u32 %ntid_x, %ntid_y;
-	.reg .u32 %x, %y, %width, %height;
-	.reg .u32 %idx;
-	.reg .u64 %idx64;
-	.reg .u64 %output_ptr;
-	.reg .u32 %zero;
-	.reg .pred %p1;
+	// Readable register declarations (better than NVCC's numeric ranges)
+	.reg .u32 %ctaid_x, %ctaid_y;          // blockIdx.x, blockIdx.y
+	.reg .u32 %ntid_x, %ntid_y;            // blockDim.x, blockDim.y  
+	.reg .u32 %tid_x, %tid_y;              // threadIdx.x, threadIdx.y
+	.reg .u32 %x, %y;                      // global coordinates
+	.reg .u32 %width, %height;             // kernel parameters
+	.reg .u32 %idx;                        // linear index
+	.reg .u64 %output_ptr;                 // output pointer
+	.reg .u64 %offset;                     // byte offset
+	.reg .u32 %zero;                       // zero value
+	.reg .pred %p_x_bound, %p_y_bound, %p_exit;  // predicate registers
+
+	// Load kernel parameters first (NVCC optimization)
+	ld.param.u64 	%output_ptr, [zero_filter_param_1];  // output pointer
+	ld.param.u32 	%width, [zero_filter_param_2];       // width
+	ld.param.u32 	%height, [zero_filter_param_3];      // height
 	
-	// Get thread and block indices
-	mov.u32 %tid_x, %tid.x;
-	mov.u32 %tid_y, %tid.y;
-	mov.u32 %ctaid_x, %ctaid.x;
-	mov.u32 %ctaid_y, %ctaid.y;
-	mov.u32 %ntid_x, %ntid.x;
-	mov.u32 %ntid_y, %ntid.y;
+	// Calculate global coordinates efficiently
+	mov.u32 	%ctaid_x, %ctaid.x;         // blockIdx.x
+	mov.u32 	%ntid_x, %ntid.x;           // blockDim.x  
+	mov.u32 	%tid_x, %tid.x;             // threadIdx.x
+	mad.lo.s32 	%x, %ctaid_x, %ntid_x, %tid_x;  // x = blockIdx.x * blockDim.x + threadIdx.x
 	
-	// Calculate global coordinates
-	mad.lo.u32 %x, %ctaid_x, %ntid_x, %tid_x;
-	mad.lo.u32 %y, %ctaid_y, %ntid_y, %tid_y;
+	mov.u32 	%ntid_y, %ntid.y;           // blockDim.y
+	mov.u32 	%ctaid_y, %ctaid.y;         // blockIdx.y
+	mov.u32 	%tid_y, %tid.y;             // threadIdx.y
+	mad.lo.s32 	%y, %ctaid_y, %ntid_y, %tid_y;  // y = blockIdx.y * blockDim.y + threadIdx.y
 	
-	// Load parameters
-	ld.param.u64 %output_ptr, [zero_filter_param_1];
-	ld.param.u32 %width, [zero_filter_param_2];
-	ld.param.u32 %height, [zero_filter_param_3];
+	// Combined boundary checking (better branch prediction than sequential checks)
+	setp.ge.u32 	%p_x_bound, %x, %width;     // p_x_bound = (x >= width)
+	setp.ge.u32 	%p_y_bound, %y, %height;    // p_y_bound = (y >= height)  
+	or.pred  	%p_exit, %p_x_bound, %p_y_bound;  // p_exit = (x >= width || y >= height)
+	@%p_exit bra 	EXIT;                       // if (p_exit) goto EXIT - single branch!
 	
-	// Check bounds
-	setp.ge.u32 %p1, %x, %width;
-	@%p1 bra EXIT;
-	setp.ge.u32 %p1, %y, %height;
-	@%p1 bra EXIT;
+	// Calculate linear index and address (NVCC-style with mul.wide)
+	mad.lo.s32 	%idx, %y, %width, %x;       // idx = y * width + x
+	mul.wide.u32 	%offset, %idx, 4;       // offset = idx * 4 (widen to 64-bit + multiply)
+	add.s64 	%output_ptr, %output_ptr, %offset;  // output_ptr = output_ptr + offset
 	
-	// Calculate linear index: y * width + x (for u32 addressing)
-	mad.lo.u32 %idx, %y, %width, %x;
-	
-	// Convert to byte offset and write zero (u32 = 4 bytes per element)
-	shl.b32 %idx, %idx, 2;  // multiply by 4 for u32 alignment
-	cvt.u64.u32 %idx64, %idx;
-	add.u64 %output_ptr, %output_ptr, %idx64;
-	mov.u32 %zero, 0;
-	st.global.u32 [%output_ptr], %zero;
-	
+	// Write zero to output
+	mov.u32 	%zero, 0;                   // zero = 0
+	st.global.u32 	[%output_ptr], %zero;   // output[y * width + x] = 0
+
 EXIT:
-	ret;
+	ret;                                // return;
 }

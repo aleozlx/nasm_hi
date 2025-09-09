@@ -1,4 +1,5 @@
 .sconsign.dblite
 build/
+__pycache__/
 .vscode/
 *.log

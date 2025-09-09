@@ -223,8 +223,8 @@ main:
 
     ; TEMPORARY: Hard-code arguments to focus on CUDA kernel
     ; TODO: Fix argument parsing later
-    mov dword [width], 3
-    mov dword [height], 3
+    mov dword [width], 64
+    mov dword [height], 64
     
     ; Test C runtime initialization with a small malloc
     mov rdi, 16         ; allocate 16 bytes
@@ -377,6 +377,7 @@ init_cuda:
     chk_cuda
     
     ; Debug: Print device ID
+    xor rdi, rdi
     mov edi, [cuda_device]
     mov rcx, sz_int32
     call convert_rdi_hex
@@ -706,37 +707,8 @@ process_single_frame:
     call [cuMemcpyDtoH_fptr]
     chk_cuda
     
-    ; Verify that the kernel correctly zeroed the output
-    mov rsi, [h_output]       ; buffer to check
-    mov rcx, [frame_size]     ; size to check
-    xor rax, rax              ; looking for zero bytes
-check_zero_loop:
-    test rcx, rcx
-    jz all_zeros_found
-    cmp byte [rsi], 0         ; check if byte is zero
-    jne non_zero_found
-    inc rsi
-    dec rcx
-    jmp check_zero_loop
-    
-non_zero_found:
-    ; Print error message if non-zero byte found
-    mov rax, sys_write
-    mov rdi, fd_stderr
-    mov rsi, zero_check_fail_msg
-    mov rdx, zero_check_fail_len
-    syscall
-    jmp zero_check_done
-    
-all_zeros_found:
-    ; Print success message if all bytes are zero
-    mov rax, sys_write
-    mov rdi, fd_stderr
-    mov rsi, zero_check_ok_msg
-    mov rdx, zero_check_ok_len
-    syscall
-    
-zero_check_done:
+    ; Internal self-test removed - use pytest framework for testing
+    ; The pytest framework provides more reliable and comprehensive testing
     ; Debug: Writing result
     mov rax, sys_write
     mov rdi, fd_stderr
