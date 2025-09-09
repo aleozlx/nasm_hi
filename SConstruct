@@ -107,10 +107,13 @@ def build_sobel_target():
         
         # Build common utilities object file
         common_object = sobel_env.Object(os.path.join(build_dir, 'common.o'), 'common.asm', AS='nasm')
+        
+        # Build CUDA library loader object file
+        cuda_loader_object = sobel_env.Object(os.path.join(build_dir, 'load_library_cuda.o'), 'load_library_cuda.asm', AS='nasm')
 
-        # Ensure runtime_init.inc is available for zero_runner.asm
+        # Build the refactored zero_runner
         zero_object = sobel_env.Object(os.path.join(build_dir, 'zero_runner.o'), 'zero_runner.asm', AS='nasm')
-        zero_executable = sobel_env.Program(os.path.join(build_dir, 'zero_runner'), [zero_object, common_object])
+        zero_executable = sobel_env.Program(os.path.join(build_dir, 'zero_runner'), [zero_object, common_object, cuda_loader_object])
 
         # Add dependencies
         # sobel_env.Depends(sobel_executable, [ptx_compiled, runtime_lib])
