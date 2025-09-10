@@ -102,8 +102,8 @@ strlen0:
     xor al, al    ; store null terminator in al
     mov rdi, rsi  ; repne scasb uses rdi
     repne scasb   ; scan for null, rcx will be -(length+1)
+    add rcx, 2    ; go back one and exclude the null terminator
     neg rcx
-    dec rcx       ; rcx now has string length
     
     pop rdi       ; restore caller's rdi
     ret

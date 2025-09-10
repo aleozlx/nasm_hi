@@ -366,7 +366,6 @@ extract_kernel_name:
     
     ; First, find the length of the string using strlen0
     call strlen0          ; rcx = length of string (source already in rsi)
-    dec rcx               ; BUG strlen0 is counting null terminator
     lea r9, [rsi+rcx]     ; the end of the entire string
     mov rdi, r9           ; in case we scan from the end
 
