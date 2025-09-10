@@ -250,7 +250,7 @@ itoa_fixed_width:
     or dl, 0x30
     cmp dl, '9'
     jbe .is_digit
-    add dl, 'a' - '0' - 0xA
+    add dl, 'A' - '0' - 0xA
 .is_digit:
     mov [rbx], dl
     dec r11

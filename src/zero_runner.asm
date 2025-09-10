@@ -4,7 +4,7 @@
 
 section .rodata
     ; PTX and kernel files
-    txt_zero_filter_ptx db 'zero_filter.ptx', 0
+    txt_zero_filter_ptx db 'kernels/zero_filter.ptx', 0
     txt_zero_filter db 'zero_filter', 0
     txt_ptx_fd db 'ptx_fd', 0
     txt_ptx_size db 'ptx_size', 0
