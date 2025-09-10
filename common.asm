@@ -11,9 +11,10 @@ sys_read equ 0
 sys_write equ 1
 sys_exit equ 60
 
-section .data
+section .rodata
     hex_chars db '0123456789ABCDEF'
-    
+
+section .data
     cuda_error_msg db 'CUDA Error: ', 0
     cuda_error_len equ $ - cuda_error_msg - 1
     
@@ -43,6 +44,7 @@ section .bss
 
 section .text
     ; Export all utility functions
+    global hex_chars
     global convert_rdi_hex
     global strlen0
     global log_debug

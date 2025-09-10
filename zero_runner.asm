@@ -24,7 +24,6 @@ section .rodata
     msg_load_ptx_module db '[D] Loading PTX module...', 0xA, 0
     msg_processing db '[D] Starting frame processing...', 0xA, 0
     msg_read db '[D] Reading frame from stdin...', 0xA, 0
-    msg_read_done db '[D] Frame read completed', 0xA, 0
     msg_htod db '[D] Copying frame to device...', 0xA, 0
     msg_kernel db '[D] Launching zero kernel...', 0xA, 0
     msg_dtoh db '[D] Copying result from device...', 0xA, 0
@@ -39,16 +38,13 @@ section .rodata
     txt_ret_val db '(ret_val)', 0
     txt_cuda_device db 'cuda_device', 0
     txt_cuda_context db 'cuda_context', 0
+    txt_cuda_function db 'cuda_function', 0
     txt_current_ctx db 'current_ctx', 0
     txt_stored_ctx db 'stored_ctx', 0
     txt_d_input db 'd_input', 0
     txt_d_output db 'd_output', 0
     txt_h_input db 'h_input', 0
     txt_h_output db 'h_output', 0
-    txt_gdim_x db 'gdim.x', 0
-    txt_gdim_y db 'gdim.y', 0
-    txt_bdim_x db 'bdim.x', 0
-    txt_bdim_y db 'bdim.y', 0
     txt_rsp db '$rsp', 0
     txt_exit_code db 'exit_code', 0
 
@@ -368,6 +364,13 @@ load_ptx_module:
     call [fptr_cuModuleGetFunction]
     chk_cuda
 
+    mov rax, [cuda_function]
+    mov rdi, rax
+    mov rcx, sz_int64
+    call convert_rdi_hex
+    mov rsi, txt_cuda_function
+    call log_debug
+
     ; Unmap the file
     mov rax, 11  ; sys_munmap
     mov rdi, [rbp-24]   ; address
@@ -400,9 +403,11 @@ process_single_frame:
     test rax, rax
     js fail_os_error
 
-    ; Debug: Frame read completed
-    mov rsi, msg_read_done
-    call log_message
+    mov rdi, rax
+    mov rcx, sz_int32
+    call convert_rdi_hex
+    mov rsi, txt_ret_val
+    call log_debug
 
     ; Debug: Copying frame to device
     mov rsi, msg_htod
@@ -422,10 +427,6 @@ process_single_frame:
     call [fptr_cuMemcpyHtoD]
     chk_cuda
     
-    ; Debug: Kernel launch
-    mov rsi, msg_kernel
-    call log_message
-
     call launch_zero_kernel
 
     ; Debug: Copying result from device
@@ -448,6 +449,14 @@ process_single_frame:
     mov rsi, [h_output]       ; Write from host buffer
     mov edx, [arg_frame_size]
     syscall
+    test rax, rax
+    js fail_os_error
+
+    mov rdi, rax
+    mov rcx, sz_int32
+    call convert_rdi_hex
+    mov rsi, txt_ret_val
+    call log_debug
     
 .done:
     mov rsp, rbp
@@ -458,34 +467,16 @@ launch_zero_kernel:
     push rbp
     mov rbp, rsp
     sub rsp, 64
-    
-    mov rax, [d_input]
-    mov [rbp-8], rax
-    
-    mov rax, [d_output]
-    mov [rbp-16], rax
-    
-    mov eax, [arg_width]
-    mov [rbp-20], eax
-    
-    mov eax, [arg_height]  
-    mov [rbp-24], eax
 
     mov rsi, msg_kernel_params
     call log_message
     
-    ; Set up kernel parameter array: pointers to actual values
-    ; The kernel expects: [&d_input_value, &d_output_value, &width_value, &height_value]
-    ; But we need to point to the VALUES, not the storage locations
-    lea rax, [rbp-8]     ; &d_input (points to where d_input value is stored)
-    mov [rbp-56], rax    ; params[0] = &d_input
-    lea rax, [rbp-16]    ; &d_output (points to where d_output value is stored)
-    mov [rbp-48], rax    ; params[1] = &d_output  
-    lea rax, [rbp-20]    ; &arg_width (points to where arg_width value is stored)
-    mov [rbp-40], rax    ; params[2] = &arg_width
-    lea rax, [rbp-24]    ; &arg_height (points to where arg_height value is stored)
-    mov [rbp-32], rax    ; params[3] = &arg_height
+    mov qword [rbp-56], d_input    ; params[0] = &d_input
+    mov qword [rbp-48], d_output    ; params[1] = &d_output  
+    mov qword [rbp-40], arg_width    ; params[2] = &arg_width
+    mov qword [rbp-32], arg_height    ; params[3] = &arg_height
     
+    ; Calculate grid dimensions
     mov eax, [arg_width]
     add eax, 15
     shr eax, 4
@@ -496,70 +487,14 @@ launch_zero_kernel:
     shr eax, 4
     mov r9d, eax
     
-    ; Print grid dimensions
-    push r8
-    push r9
-    
-    mov rdi, r8
-    mov rcx, sz_int32  ; 4 bytes for 32-bit value
-    call convert_rdi_hex
-    mov rsi, txt_gdim_x
-    call log_debug
-    
-    mov rdi, r9
-    mov rcx, sz_int32
-    call convert_rdi_hex
-    mov rsi, txt_gdim_y
-    call log_debug
-    
     ; CUDA kernel constants
     kBLOCK_DIM_X equ 16
     kBLOCK_DIM_Y equ 16
+    
+    ; Debug: Kernel launch
+    mov rsi, msg_kernel
+    call log_message
 
-    mov rdi, kBLOCK_DIM_X
-    mov rcx, sz_int32
-    call convert_rdi_hex
-    mov rsi, txt_bdim_x
-    call log_debug
-    
-    mov rdi, kBLOCK_DIM_Y
-    mov rcx, sz_int32
-    call convert_rdi_hex
-    mov rsi, txt_bdim_y
-    call log_debug
-    
-    pop r9
-    pop r8
-    
-    ; Debug: Print parameter values before launch
-    push r8
-    push r9
-    mov rdi, [d_input]
-    mov rcx, sz_int64
-    call convert_rdi_hex
-    mov rsi, txt_d_input
-    call log_debug
-    
-    mov rdi, [d_output]
-    mov rcx, sz_int64
-    call convert_rdi_hex
-    mov rsi, txt_d_output
-    call log_debug
-    
-    mov rdi, [arg_width]
-    mov rcx, sz_int32
-    call convert_rdi_hex
-    mov rsi, txt_width
-    call log_debug
-    
-    mov rdi, [arg_height]
-    mov rcx, sz_int32
-    call convert_rdi_hex
-    mov rsi, txt_height
-    call log_debug
-    pop r9
-    pop r8
-    
     ; Debug: Check if cuda_function is valid
     mov rax, [cuda_function]
     test rax, rax
@@ -583,26 +518,28 @@ launch_zero_kernel:
     push 0                   ; sharedMemBytes
     push 1                   ; blockDimZ
     
+    call log_kernel_launch
 
     ; Call cuLaunchKernel (parameters already set up)
     call [fptr_cuLaunchKernel]
-    ; add rsp, 48              ; 6 qwords = 48 bytes
     chk_cuda
     
     ; Synchronize to wait for kernel completion and check for kernel errors
     call [fptr_cuCtxSynchronize]
     chk_cuda
+    jmp .done
 
 .error_kernel_null_fptr:
     mov rsi, msg_memory_error  ; reuse error message
     call log_message
+    jmp exit_failure
 
 .done:
     mov rsp, rbp
     pop rbp
     ret
 
-; Clobbers: rdi
+; Clobbers: rax, rdi
 cleanup:
     push rbp
     mov rbp, rsp
@@ -669,6 +606,7 @@ exit_failure:
 
 ; Returns: rax = 1 on success, 0 on failure
 exit_program:
+    push rax
     mov rsi, msg_exit
     call log_message
     mov rdi, rax
@@ -677,9 +615,9 @@ exit_program:
     mov rsi, txt_exit_code
     call log_debug
 
-    call cleanup
+    call cleanup ; clobbers rax, rdi
     
     ; Exit with status code
-    mov rdi, rax ; exit code
+    pop rdi ; exit code
     mov rax, sys_exit_group
     syscall
