@@ -2,6 +2,7 @@
 ; Include this file in other assembly files with: %include "common.inc"
 
 ; External functions from common.asm
+extern common_init
 extern parse_int
 extern convert_rdi_hex
 extern strlen0
@@ -17,6 +18,13 @@ sz_int64 equ 8
 fd_stdin equ 0
 fd_stdout equ 1
 fd_stderr equ 2
+
+%macro div_up 1
+    xor rdx, rdx
+    add rax, %1
+    dec rax
+    div %1
+%endmacro
 
 ; Immediate abort with exit code
 ; Usage: abort_now 1

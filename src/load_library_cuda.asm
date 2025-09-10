@@ -1,7 +1,7 @@
 %include "common.inc"
 
 section .data
-dbg_launch:
+    dbg_launch db "[I] "
     dbg_launch_bdim db "bdim:["
     dbg_launch_bdim_x db "0000 "
     dbg_launch_bdim_y db "0000 "

@@ -80,7 +80,6 @@ section .text
     extern dlsym
     extern dlclose
     extern atoi
-    
 
 ; Parse command line arguments
 ; Input: rdi = argc, rsi = argv
@@ -88,18 +87,13 @@ section .text
 ; Returns: rax = 0 if successful, 1 if error
 ; Clobbers: rdi, rsi, rcx
 parse_args:
-    push rbp
-    mov rbp, rsp
-    push rbx
-    
-    mov rbx, rsi    ; argv
 
     ; Debug: Starting message
     mov rsi, msg_start
     call log_message
     
     ; Check if we have exactly 4 arguments (program name + kernel.ptx + width + height)
-    cmp rdi, 4
+    cmp rcx, 4
     jne .usage_error
     
     ; Store PTX path pointer (argv[1])
@@ -158,18 +152,20 @@ parse_args:
 .done:
     mov rsi, msg_args
     call log_message
-    pop rbx
-    mov rsp, rbp
-    pop rbp
     ret
 
 ; Main entry point
 main:
     push rbp
     mov rbp, rsp
-    
-    ; Parse command line arguments FIRST before any syscalls
-    ; Note: rdi and rsi already contain argc and argv from C runtime
+    mov rbx, rsi  ; argv
+    mov rcx, rdi  ; argc
+
+.global_init:
+    push rcx
+    call common_init
+    pop rcx
+
     call parse_args
     
     ; Load CUDA library and function pointers
@@ -222,10 +218,7 @@ main:
     call log_debug
     
     call allocate_memory
-    
     call load_ptx_module
-    
-    ; Process frame
     call process_single_frame
     
     ; Exit
@@ -484,25 +477,25 @@ launch_zero_kernel:
     mov rsi, msg_kernel_params
     call log_message
     
+    ; Prepare kernel parameters
     mov qword [rbp-56], d_input    ; params[0] = &d_input
     mov qword [rbp-48], d_output    ; params[1] = &d_output  
     mov qword [rbp-40], arg_width    ; params[2] = &arg_width
     mov qword [rbp-32], arg_height    ; params[3] = &arg_height
     
     ; Calculate grid dimensions
+    kBLOCK_DIM_X equ 16
+    kBLOCK_DIM_Y equ 16
+    mov r8d, kBLOCK_DIM_X
+    mov r9d, kBLOCK_DIM_Y
+
     mov eax, [arg_width]
-    add eax, 15
-    shr eax, 4
+    div_up r8
     mov r8d, eax
     
     mov eax, [arg_height]
-    add eax, 15
-    shr eax, 4
+    div_up r9
     mov r9d, eax
-    
-    ; CUDA kernel constants
-    kBLOCK_DIM_X equ 16
-    kBLOCK_DIM_Y equ 16
     
     ; Debug: Kernel launch
     mov rsi, msg_kernel
@@ -532,12 +525,9 @@ launch_zero_kernel:
     push 1                   ; blockDimZ
     
     call log_kernel_launch
-
-    ; Call cuLaunchKernel (parameters already set up)
     call [fptr_cuLaunchKernel]
     chk_cuda
     
-    ; Synchronize to wait for kernel completion and check for kernel errors
     call [fptr_cuCtxSynchronize]
     chk_cuda
     jmp .done

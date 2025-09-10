@@ -68,11 +68,7 @@ def build_sobel_target():
     zero_object = sobel_env.Object(os.path.join(build_dir, 'zero_runner.o'), 'src/zero_runner.asm', AS='nasm')
     zero_executable = sobel_env.Program(os.path.join(build_dir, 'zero_runner'), [zero_object, common_object, cuda_loader_object])
 
-    # Build sobel_runner the same way as zero_runner
-    sobel_object = sobel_env.Object(os.path.join(build_dir, 'sobel_runner.o'), 'src/sobel_runner.asm', AS='nasm')
-    sobel_executable = sobel_env.Program(os.path.join(build_dir, 'sobel_runner'), [sobel_object, common_object, cuda_loader_object])
-
-    return [sobel_executable, zero_executable, common_object]
+    return [zero_executable, common_object]
 
 # Check for CUDA build flag
 build_cuda = ARGUMENTS.get('cuda', 0)

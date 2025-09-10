@@ -44,6 +44,7 @@ section .bss
 
 section .text
     ; Export all utility functions
+    global common_init
     global hex_chars
     global convert_rdi_hex
     global strlen0
@@ -59,6 +60,13 @@ section .text
     extern fptr_cuGetErrorString  ; CUDA function pointer from load_library_cuda module
     extern strerror
     extern __errno_location
+
+common_init:
+    mov rsi, debug_prefix
+    mov rdi, debug_buffer
+    mov rcx, debug_prefix_len
+    rep movsb
+    ret
 
 
 ; Convert integer to hexadecimal string
