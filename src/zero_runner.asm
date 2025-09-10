@@ -3,18 +3,15 @@
 %include "load_library_cuda.inc"
 
 section .rodata
-    ; PTX and kernel files
-    txt_zero_filter_ptx db 'kernels/zero_filter.ptx', 0
-    txt_zero_filter db 'zero_filter', 0
     txt_ptx_fd db 'ptx_fd', 0
     txt_ptx_size db 'ptx_size', 0
     
     extern msg_abort
     extern msg_abort_len
-    msg_usage db 'Usage: zero_runner <width> <height>', 0xA, 0
+    msg_usage db 'Usage: zero_runner <kernel.ptx> <width> <height>', 0xA, 0
     msg_load_library_cuda db 'Error: Failed to load CUDA library', 0xA, 0
     msg_memory_error db 'Memory allocation failed', 0xA, 0
-    msg_ptx_opening db '[D] Opening PTX file: zero_filter.ptx', 0xA, 0
+    msg_ptx_opening db '[D] Opening PTX file: ', 0
     msg_ptx_mapping db '[D] Mapping PTX file to memory', 0xA, 0
     msg_start db '[D] Starting zero_runner...', 0xA, 0
     msg_args db '[D] Arguments parsed successfully', 0xA, 0
@@ -49,6 +46,8 @@ section .rodata
     txt_exit_code db 'exit_code', 0
 
 section .bss
+    arg_ptx_path resq 1          ; Pointer to PTX file path (from argv[1])
+    arg_kernel_name resb 64      ; Kernel name (filename without .ptx extension)
     arg_width resd 1
     arg_height resd 1
     arg_frame_size resd 1
@@ -85,7 +84,7 @@ section .text
 
 ; Parse command line arguments
 ; Input: rdi = argc, rsi = argv
-; Output: sets width and height variables
+; Output: sets PTX path, kernel name, width and height variables
 ; Returns: rax = 0 if successful, 1 if error
 ; Clobbers: rdi, rsi, rcx
 parse_args:
@@ -99,12 +98,24 @@ parse_args:
     mov rsi, msg_start
     call log_message
     
-    ; Check if we have exactly 3 arguments (program name + width + height)
-    cmp rdi, 3
+    ; Check if we have exactly 4 arguments (program name + kernel.ptx + width + height)
+    cmp rdi, 4
     jne .usage_error
     
-    ; Parse width (argv[1])
-    mov rdi, [rbx + 8]
+    ; Store PTX path pointer (argv[1])
+    mov rax, [rbx + 8]      ; argv[1] - PTX file path
+    mov [arg_ptx_path], rax ; store pointer directly
+    
+    ; Extract kernel name (filename without .ptx extension)
+    mov rsi, rax            ; PTX path (source)
+    mov rdi, arg_kernel_name ; destination buffer
+    call extract_kernel_name
+
+    ; mov rsi, arg_kernel_name
+    ; call log_message
+    
+    ; Parse width (argv[2])
+    mov rdi, [rbx + 16]
     call atoi  ; clobbers rsi
     mov [arg_width], eax
 
@@ -114,8 +125,8 @@ parse_args:
     mov rsi, txt_width
     call log_debug
     
-    ; Parse height (argv[2])
-    mov rdi, [rbx + 16]
+    ; Parse height (argv[3])
+    mov rdi, [rbx + 24]
     call atoi  ; clobbers rsi
     mov [arg_height], eax
 
@@ -299,9 +310,11 @@ load_ptx_module:
     ; Debug: Opening PTX file
     mov rsi, msg_ptx_opening
     call log_message
+    mov rsi, [arg_ptx_path]
+    call log_message
 
     ; Open PTX file
-    mov rdi, txt_zero_filter_ptx
+    mov rdi, [arg_ptx_path]
     mov rsi, 0          ; O_RDONLY
     call open
     test rax, rax
@@ -360,7 +373,7 @@ load_ptx_module:
     ; Get function from module
     mov rdi, cuda_function      ; pointer to store function
     mov rsi, [cuda_module]      ; module
-    mov rdx, txt_zero_filter    ; function name
+    mov rdx, arg_kernel_name    ; function name
     call [fptr_cuModuleGetFunction]
     chk_cuda
 

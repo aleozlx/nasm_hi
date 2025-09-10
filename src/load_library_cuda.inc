@@ -4,6 +4,7 @@
 ; External function to load CUDA library
 extern load_cuda_library
 extern log_kernel_launch
+extern extract_kernel_name
 
 ; External CUDA function pointers (defined in load_library_cuda.asm)
 extern fptr_cuInit

@@ -20,6 +20,7 @@ dbg_launch:
 section .rodata
     ; CUDA library path and function names for dlopen
     txt_libcuda_so_1 db 'libcuda.so.1', 0
+    ptx_suffix db '.ptx', 0
     txt_cuInit db 'cuInit', 0
     txt_cuDeviceGet db 'cuDeviceGet', 0
     txt_cuCtxCreate db 'cuCtxCreate', 0
@@ -60,8 +61,10 @@ section .bss
 
 section .text
     global load_cuda_library
+    global extract_kernel_name
     global log_kernel_launch
     extern dlopen, dlsym, dlclose
+    extern strlen0
     
     ; Make CUDA function pointers global for external use
     global fptr_cuInit
@@ -346,6 +349,70 @@ log_kernel_launch:
     pop r12
     pop rbx
     pop rax
+    mov rsp, rbp
+    pop rbp
+    ret
+
+; Extract kernel name from PTX path and copy without .ptx extension
+; Input: rsi = PTX path (e.g., "kernels/sobel_filter.ptx")
+;        rdi = destination buffer for kernel name
+; Output: copies kernel name (e.g., "sobel_filter") to destination buffer
+; Clobbers: rax, rcx, rdx, rsi, rdi
+extract_kernel_name:
+    push rbp
+    mov rbp, rsp
+    push rdi
+    push rsi
+    
+    ; First, find the length of the string using strlen0
+    call strlen0          ; rcx = length of string (source already in rsi)
+    dec rcx               ; BUG strlen0 is counting null terminator
+    lea r9, [rsi+rcx]     ; the end of the entire string
+    mov rdi, r9           ; in case we scan from the end
+
+    ; Check if we have enough characters for ".ptx"
+    cmp rcx, 4            ; need at least 4 characters for ".ptx"
+    jb .find_slash        ; ready to continue from rdi
+    
+    ; Check for ".ptx" suffix using right-to-left scan with rep cmpsb
+    std                     ; Set direction flag (right to left)
+    ; mov rsi, [rsp]          ; restore original source string
+    lea rdi, [rsi+rcx-1]    ; start from end of string (before null)
+    lea rsi, [ptx_suffix+3] ; Point to end of ".ptx"
+    mov rcx, 4             ; compare 4 characters
+    repe cmpsb             ; compare backwards: 'x', 't', 'p', '.'
+    jne .find_slash        ; ready to continue from rdi
+    
+    ; Found ".ptx" suffix, rdi now points one position before the '.'
+    lea r9, [rdi+1]       ; point to the '.'
+    
+.find_slash:
+    ; Scan right-to-left to find '/' using scasb
+    pop r8                ; the '/' or the beginning will be in r8
+    mov rdi, r9           ; start from the '.' or the end
+    mov rcx, rdi          ; max characters to scan
+    sub rcx, r8
+    mov al, '/'
+    repne scasb           ; scan for '/' from right to left
+    jne .copy_kernel_name ; if not found, use start of string
+    
+    ; Found '/', rdi now points one position before the '/'
+    lea r8, [rdi+2]       ; point to the character after '/'
+    
+.copy_kernel_name:
+    ; Now copy from rdi (start) to r9 (end position)
+    cld                   ; Restore default direction (left to right)
+    mov rsi, r8           ; source = start position
+    mov rcx, r9           ; calculate length
+    sub rcx, r8
+    pop rdi               ; restore original destination buffer
+    
+    ; Copy the kernel name
+    rep movsb             ; copy rcx bytes from rsi to rdi
+    
+    ; Null terminate
+    mov byte [rdi], 0
+    
     mov rsp, rbp
     pop rbp
     ret
