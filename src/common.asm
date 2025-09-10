@@ -94,18 +94,16 @@ convert_rdi_hex:
 ; Calculate length of null-terminated string
 ; Input: rsi = null-terminated string
 ; Output: rcx = string length
-; Clobbers: rax, rcx, rdi
+; Clobbers: rax, rcx, rdx
 strlen0:
-    push rdi      ; save caller's rdi since repne scasb modifies it
-    
+    mov rdx, rdi  ; save caller's rdi because many string algos use it
     mov rcx, -1   ; no size limit
     xor al, al    ; store null terminator in al
     mov rdi, rsi  ; repne scasb uses rdi
-    repne scasb   ; scan for null, rcx will be -(length+1)
+    repne scasb   ; scan for null, rcx will be -(length+2)
     add rcx, 2    ; go back one and exclude the null terminator
     neg rcx
-    
-    pop rdi       ; restore caller's rdi
+    mov rdi, rdx  ; restore caller's rdi
     ret
 
 ; Log a message to stderr (new line not included)
