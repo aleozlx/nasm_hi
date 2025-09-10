@@ -332,9 +332,9 @@ log_kernel_launch:
     call itoa_fixed_width
 
     ; stack: blockZ, sharedMem, stream, params, extra
-    movdqa xmm0, [rbp + .blockZ]
-    movdqa xmm1, [rbp + .stream]
-    movdqa xmm2, [rbp + .extra]
+    ; movdqa xmm0, [rbp + .blockZ]
+    ; movdqa xmm1, [rbp + .stream]
+    ; movdqa xmm2, [rbp + .extra]
     mov rax, [rbp + .blockZ] ; blockZ
     mov rbx, dbg_launch_bdim_z
     call itoa_fixed_width
