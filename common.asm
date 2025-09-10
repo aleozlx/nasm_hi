@@ -43,7 +43,6 @@ section .bss
 
 section .text
     ; Export all utility functions
-    global parse_int
     global convert_rdi_hex
     global strlen0
     global log_debug
@@ -59,38 +58,6 @@ section .text
     extern strerror
     extern __errno_location
 
-; String to integer conversion
-; Input: rsi = null-terminated string
-; Output: rax = parsed integer
-parse_int:
-    push rbx
-    push rcx
-    push rdx
-    
-    xor rax, rax
-    xor rbx, rbx
-    
-.parse_loop:
-    mov bl, [rsi]
-    test bl, bl
-    jz .parse_done
-    
-    cmp bl, '0'
-    jb .parse_done
-    cmp bl, '9'
-    ja .parse_done
-    
-    sub bl, '0'
-    imul rax, 10
-    add rax, rbx
-    inc rsi
-    jmp .parse_loop
-    
-.parse_done:
-    pop rdx
-    pop rcx
-    pop rbx
-    ret
 
 ; Convert integer to hexadecimal string
 ; Input: rdi = value to convert, rcx = bytes to output

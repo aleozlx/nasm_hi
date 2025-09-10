@@ -23,7 +23,7 @@ set args 64 64
 # break allocate_memory  
 # break load_ptx_module
 # break process_single_frame
-break launch_zero_kernel
+# break launch_zero_kernel
 
 # CUDA-specific breakpoints - more targeted
 # break cuInit
