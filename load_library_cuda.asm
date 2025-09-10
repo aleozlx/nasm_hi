@@ -265,7 +265,11 @@ itoa_fixed_width:
     dec rbx
     xor rdx, rdx
     div r10
-    mov dl, [hex_chars + rdx]
+    or dl, 0x30
+    cmp dl, '9'
+    jbe .is_digit
+    add dl, 'a' - '0' - 0xA
+.is_digit:
     mov [rbx], dl
     dec r11
     test r11, r11
@@ -328,6 +332,9 @@ log_kernel_launch:
     call itoa_fixed_width
 
     ; stack: blockZ, sharedMem, stream, params, extra
+    movdqa xmm0, [rbp + .blockZ]
+    movdqa xmm1, [rbp + .stream]
+    movdqa xmm2, [rbp + .extra]
     mov rax, [rbp + .blockZ] ; blockZ
     mov rbx, dbg_launch_bdim_z
     call itoa_fixed_width
