@@ -63,24 +63,6 @@ section .text
     global log_kernel_launch
     extern dlopen, dlsym, dlclose
     
-    ; Make CUDA string constants global for external use
-    global txt_libcuda_so_1
-    global txt_cuInit
-    global txt_cuDeviceGet
-    global txt_cuCtxCreate
-    global txt_cuCtxSetCurrent
-    global txt_cuCtxGetCurrent
-    global txt_cuMemAlloc
-    global txt_cuMemAllocManaged
-    global txt_cuMemFree
-    global txt_cuMemcpyHtoD
-    global txt_cuMemcpyDtoH
-    global txt_cuModuleLoadData
-    global txt_cuModuleGetFunction
-    global txt_cuLaunchKernel
-    global txt_cuCtxSynchronize
-    global txt_cuGetErrorString
-    
     ; Make CUDA function pointers global for external use
     global fptr_cuInit
     global fptr_cuDeviceGet
